@@ -43,12 +43,7 @@ defmodule Tesla.Middleware.Logger.Formatter do
     Enum.map(format, &output(&1, request, response, time))
   end
 
-  defp output(:query, env, _, _) do
-    encoding = Keyword.get(env.opts, :query_encoding, :www_form)
-
-    Tesla.encode_query(env.query, encoding)
-  end
-
+  defp output(:query, env, _, _), do: env.query |> Tesla.encode_query()
   defp output(:method, env, _, _), do: env.method |> to_string() |> String.upcase()
   defp output(:url, env, _, _), do: env.url
   defp output(:status, _, {:ok, env}, _), do: to_string(env.status)
@@ -61,16 +56,15 @@ defmodule Tesla.Middleware.Logger do
   @moduledoc ~S"""
   Log requests using Elixir's Logger.
 
-  With the default settings it logs request method, URL, response status, and
-  time taken in milliseconds.
+  With the default settings it logs request method, URL, response status, and time taken in milliseconds.
 
   ## Examples
 
   ```elixir
   defmodule MyClient do
-    def client do
-      Tesla.client([Tesla.Middleware.Logger])
-    end
+    use Tesla
+
+    plug Tesla.Middleware.Logger
   end
   ```
 
@@ -78,7 +72,7 @@ defmodule Tesla.Middleware.Logger do
 
   - `:log_level` - custom function for calculating log level (see below)
   - `:filter_headers` - sanitizes sensitive headers before logging in debug mode (see below)
-  - `:debug` - use `Logger.debug/2` to log request/response details
+  - `:debug` - show detailed request/response logging
   - `:format` - custom string template or function for log message (see below)
 
   ## Custom log format
@@ -86,7 +80,7 @@ defmodule Tesla.Middleware.Logger do
   The default log format is `"$method $url -> $status ($time ms)"`
   which shows in logs like:
 
-  ```elixir
+  ```
   2018-03-25 18:32:40.397 [info]  GET https://bitebot.io -> 200 (88.074 ms)
   ```
 
@@ -100,11 +94,9 @@ defmodule Tesla.Middleware.Logger do
 
   ```elixir
   defmodule MyClient do
-    def client do
-      Tesla.client([
-        {Tesla.Middleware.Logger, format: &my_format/3}
-      ])
-    end
+    use Tesla
+
+    plug Tesla.Middleware.Logger, format: &my_format/3
 
     def my_format(request, response, time) do
       "request=#{inspect(request)} response=#{inspect(response)} time=#{time}\n"
@@ -124,11 +116,9 @@ defmodule Tesla.Middleware.Logger do
 
   ```elixir
   defmodule MyClient do
-    def client do
-      Tesla.client([
-        {Tesla.Middleware.Logger, log_level: &my_log_level/1}
-      ])
-    end
+    use Tesla
+
+    plug Tesla.Middleware.Logger, log_level: &my_log_level/1
 
     def my_log_level(env) do
       case env.status do
@@ -141,20 +131,14 @@ defmodule Tesla.Middleware.Logger do
 
   ## Logger Debug output
 
-  `Tesla` will use `Logger.debug/2` to log request & response details using
-  the `:debug` option. It will require to set the `Logger` log level to `:debug`
-  in your configuration, example:
+  When the Elixir Logger log level is set to `:debug`
+  Tesla Logger will show full request & response.
 
-  ```elixir
-  # config/dev.exs
-  config :logger, level: :debug
+  If you want to disable detailed request/response logging
+  but keep the `:debug` log level (i.e. in development)
+  you can set `debug: false` in your config:
+
   ```
-
-  If you want to disable detailed request/response logging but keep the
-  `:debug` log level (i.e. in development) you can set `debug: false` in your
-  config:
-
-  ```elixir
   # config/dev.local.exs
   config :tesla, Tesla.Middleware.Logger, debug: false
   ```
@@ -162,7 +146,7 @@ defmodule Tesla.Middleware.Logger do
   Note that the logging configuration is evaluated at compile time,
   so Tesla must be recompiled for the configuration to take effect:
 
-  ```shell
+  ```
   mix deps.clean --build tesla
   mix deps.compile tesla
   ```
@@ -187,7 +171,7 @@ defmodule Tesla.Middleware.Logger do
   debug logs, add them to the `:filter_headers` option.
   `:filter_headers` expects a list of header names as strings.
 
-  ```elixir
+  ```
   # config/dev.local.exs
   config :tesla, Tesla.Middleware.Logger,
     filter_headers: ["authorization"]
@@ -281,7 +265,7 @@ defmodule Tesla.Middleware.Logger do
       "\n<<< RESPONSE <<<\n",
       debug_headers(response.headers, config),
       ?\n,
-      debug_body(response.body)
+      debug_body(response, response.body)
     ]
   end
 
@@ -318,6 +302,13 @@ defmodule Tesla.Middleware.Logger do
     end)
   end
 
+  def debug_body(request, body) do
+    cond do
+      has_streamed_body?(request) -> "[Streamed body]"
+      true -> debug_body(body)
+    end
+  end
+
   defp debug_body(nil), do: @debug_no_body
   defp debug_body([]), do: @debug_no_body
   defp debug_body(%Stream{}), do: @debug_stream
@@ -338,4 +329,14 @@ defmodule Tesla.Middleware.Logger do
 
   defp debug_body(data) when is_binary(data) or is_list(data), do: data
   defp debug_body(term), do: inspect(term)
+
+  defp has_streamed_body?(%Tesla.Env{body: %Stream{}}), do: true
+  defp has_streamed_body?(%{headers: headers}) do
+    cond  do
+      Enum.any?(headers, fn {k, v} -> k == "content-type" and v == "application/octet-stream" end) -> true
+      Enum.any?(headers, fn {k, v} -> k == "transfer-encoding" and v == "chunked" end) -> true
+      true -> false
+    end
+
+  end
 end
